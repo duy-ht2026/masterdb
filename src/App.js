@@ -27,17 +27,10 @@ import {
 const SUPABASE_URL = "https://etdnpahmxdeurxlcuwcu.supabase.co";
 const SUPABASE_KEY = "sb_publishable_vVs25rvLSgZXVkxw9WeT5w_xtaagYYG";
 
-// Tự động nạp Tailwind CSS để tránh lỗi vỡ giao diện khi deploy
-if (typeof document !== 'undefined' && !document.getElementById('tailwind-inject')) {
-  const link = document.createElement('link');
-  link.id = 'tailwind-inject';
-  link.rel = 'stylesheet';
-  link.href = 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css';
-  document.head.appendChild(link);
-}
-
 const App = () => {
+  // Quản lý Tab: 'address', 'custgroup', 'channel', 'model'
   const [activeTab, setActiveTab] = useState('address');
+  
   const [data, setData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -45,28 +38,48 @@ const App = () => {
   const [status, setStatus] = useState({ type: '', message: '' });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [supabase, setSupabase] = useState(null);
+  const [xlsx, setXlsx] = useState(null);
   
+  // Quản lý Đăng nhập
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
 
+  // Phân trang
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInputValue, setPageInputValue] = useState('1');
   const itemsPerPage = 30;
 
+  // Form Data cho các bảng
+  const [addressForm, setAddressForm] = useState({
+    address_short: '', code_phuong: '', code_city: '', code_region: '', name_city: ''
+  });
+  const [custGroupForm, setCustGroupForm] = useState({
+    group_name: '', group_code: '', chanel_code: '', group_cha: '', limit_code: ''
+  });
+  const [channelForm, setChannelForm] = useState({
+    chcode: '', chname: ''
+  });
+  const [modelForm, setModelForm] = useState({
+    mdcode: '', mdname: '', chanel_code: ''
+  });
+
   const fileInputRef = useRef(null);
 
-  // Khôi phục trạng thái đăng nhập khi F5
+  // 1. Kiểm tra Auth ngay lập tức khi khởi tạo (Fix lỗi F5 mất login)
   useEffect(() => {
     const checkAuth = () => {
       const savedAuth = localStorage.getItem('app_auth');
       const authTimestamp = localStorage.getItem('app_auth_time');
+      
       if (savedAuth === 'true' && authTimestamp) {
         const now = new Date().getTime();
-        if (now - parseInt(authTimestamp) < 60 * 60 * 1000) {
+        const hourInMs = 60 * 60 * 1000;
+        if (now - parseInt(authTimestamp) < hourInMs) {
           setIsAuthenticated(true);
         } else {
+          // Hết hạn thì xóa sạch
           localStorage.removeItem('app_auth');
           localStorage.removeItem('app_auth_time');
         }
@@ -75,69 +88,94 @@ const App = () => {
     checkAuth();
   }, []);
 
-  // Khởi tạo Supabase
+  // 2. Load thư viện từ CDN
   useEffect(() => {
-    const initSupabase = async () => {
+    const loadScripts = async () => {
       try {
         if (!window.supabase) {
-          const script = document.createElement('script');
-          script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-          document.head.appendChild(script);
-          script.onload = () => {
-            const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-            setSupabase(client);
-          };
-        } else {
-          const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-          setSupabase(client);
+          const supabaseScript = document.createElement('script');
+          supabaseScript.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+          document.head.appendChild(supabaseScript);
+          await new Promise((resolve) => (supabaseScript.onload = resolve));
         }
+        
+        if (!window.XLSX) {
+          const xlsxScript = document.createElement('script');
+          xlsxScript.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          document.head.appendChild(xlsxScript);
+          await new Promise((resolve) => (xlsxScript.onload = resolve));
+        }
+
+        const sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        setSupabase(sbClient);
+        setXlsx(window.XLSX);
+        setLoading(false);
       } catch (err) {
-        setStatus({ type: 'error', message: 'Không thể kết nối cơ sở dữ liệu' });
+        showStatus('error', 'Lỗi khi tải thư viện từ CDN');
       }
     };
-    initSupabase();
+    loadScripts();
   }, []);
 
   useEffect(() => {
+    setPageInputValue(currentPage.toString());
+  }, [currentPage]);
+
+  useEffect(() => {
     if (supabase) {
-      fetchData();
+      const delayDebounceFn = setTimeout(() => {
+        fetchData();
+      }, 500);
+      return () => clearTimeout(delayDebounceFn);
     }
   }, [supabase, activeTab, currentPage, searchTerm]);
 
   const fetchData = async () => {
+    if (!supabase) return;
     setLoading(true);
     try {
-      const tableMap = { 
-        address: 'ConfigAddress', 
-        custgroup: 'ConfigCustGroup', 
-        channel: 'ConfigChannel', 
-        model: 'ConfigModel' 
-      };
-      const tableName = tableMap[activeTab];
-      const from = (currentPage - 1) * itemsPerPage;
-      const to = from + itemsPerPage - 1;
+      if (activeTab === 'channel') {
+        const { data, error } = await supabase
+          .from('ConfigChannel')
+          .select('*')
+          .order('id', { ascending: false });
 
-      let query = supabase.from(tableName).select('*', { count: 'exact' });
+        if (error) throw error;
+        setData(data || []);
+        setTotalCount(data?.length || 0);
+      } else {
+        const from = (currentPage - 1) * itemsPerPage;
+        const to = from + itemsPerPage - 1;
+        
+        const tableMap = {
+          address: 'ConfigAddress',
+          custgroup: 'ConfigCustGroup',
+          model: 'ConfigModel'
+        };
+        const tableName = tableMap[activeTab];
 
-      if (searchTerm) {
-        if (activeTab === 'address') {
-          query = query.or(`address_short.ilike.%${searchTerm}%,name_city.ilike.%${searchTerm}%`);
-        } else if (activeTab === 'custgroup') {
-          query = query.or(`group_name.ilike.%${searchTerm}%,group_code.ilike.%${searchTerm}%`);
-        } else if (activeTab === 'model') {
-          query = query.or(`mdcode.ilike.%${searchTerm}%,mdname.ilike.%${searchTerm}%`);
+        let query = supabase.from(tableName).select('*', { count: 'exact' });
+
+        if (searchTerm) {
+          if (activeTab === 'address') {
+            query = query.or(`address_short.ilike.%${searchTerm}%,name_city.ilike.%${searchTerm}%,code_phuong.ilike.%${searchTerm}%`);
+          } else if (activeTab === 'custgroup') {
+            query = query.or(`group_name.ilike.%${searchTerm}%,group_code.ilike.%${searchTerm}%,chanel_code.ilike.%${searchTerm}%`);
+          } else if (activeTab === 'model') {
+            query = query.or(`mdcode.ilike.%${searchTerm}%,mdname.ilike.%${searchTerm}%,chanel_code.ilike.%${searchTerm}%`);
+          }
         }
+
+        const { data, error, count } = await query
+          .order('id', { ascending: false })
+          .range(from, to);
+
+        if (error) throw error;
+        setData(data || []);
+        setTotalCount(count || 0);
       }
-
-      const { data, error, count } = await query
-        .order('id', { ascending: false })
-        .range(from, to);
-
-      if (error) throw error;
-      setData(data || []);
-      setTotalCount(count || 0);
     } catch (error) {
-      console.error(error);
+      showStatus('error', 'Lỗi tải dữ liệu: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -148,11 +186,15 @@ const App = () => {
     if (loginForm.username === 'itmasterht' && loginForm.password === '2026master@') {
       setIsAuthenticated(true);
       setIsLoginModalOpen(false);
+      setLoginError('');
+      
+      // Lưu trạng thái và thời gian đăng nhập vào localStorage
       localStorage.setItem('app_auth', 'true');
       localStorage.setItem('app_auth_time', new Date().getTime().toString());
-      setStatus({ type: 'success', message: 'Đăng nhập thành công!' });
+      
+      showStatus('success', 'Đăng nhập thành công!');
     } else {
-      setLoginError('Tài khoản hoặc mật khẩu không đúng');
+      setLoginError('Thông tin tài khoản hoặc mật khẩu không chính xác.');
     }
   };
 
@@ -160,159 +202,314 @@ const App = () => {
     setIsAuthenticated(false);
     localStorage.removeItem('app_auth');
     localStorage.removeItem('app_auth_time');
+    showStatus('success', 'Đã đăng xuất.');
+  };
+
+  const openActionModal = () => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+    } else {
+      setIsModalOpen(true);
+    }
+  };
+
+  const triggerImport = () => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+    } else if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const showStatus = (type, message) => {
+    setStatus({ type, message });
+    setTimeout(() => setStatus({ type: '', message: '' }), 5000);
+  };
+
+  const cleanValue = (val) => (val === null || val === undefined ? '' : String(val).trim());
+
+  const totalPages = Math.ceil(totalCount / itemsPerPage);
+
+  const handlePageInputSubmit = (e) => {
+    if (e.key === 'Enter') {
+      const pageNum = parseInt(pageInputValue);
+      if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+        setCurrentPage(pageNum);
+      } else {
+        setPageInputValue(currentPage.toString());
+      }
+    }
+  };
+
+  const handleInsert = async (e) => {
+    e.preventDefault();
+    if (!supabase || !isAuthenticated) return;
+    setLoading(true);
+    try {
+      let tableName = '';
+      let payload = {};
+
+      if (activeTab === 'address') {
+        tableName = 'ConfigAddress';
+        payload = Object.fromEntries(Object.entries(addressForm).map(([k, v]) => [k, cleanValue(v)]));
+      } else if (activeTab === 'custgroup') {
+        tableName = 'ConfigCustGroup';
+        payload = Object.fromEntries(Object.entries(custGroupForm).map(([k, v]) => [k, cleanValue(v)]));
+      } else if (activeTab === 'channel') {
+        tableName = 'ConfigChannel';
+        payload = Object.fromEntries(Object.entries(channelForm).map(([k, v]) => [k, cleanValue(v)]));
+      } else if (activeTab === 'model') {
+        tableName = 'ConfigModel';
+        payload = Object.fromEntries(Object.entries(modelForm).map(([k, v]) => [k, cleanValue(v)]));
+      }
+
+      const { error } = await supabase.from(tableName).insert([payload]);
+      if (error) throw error;
+      
+      showStatus('success', 'Thêm bản ghi thành công!');
+      setIsModalOpen(false);
+      fetchData();
+    } catch (error) {
+      showStatus('error', 'Lỗi: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImportExcel = (e) => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    const importAllowed = ['address', 'custgroup'].includes(activeTab);
+    if (!xlsx || !supabase || !importAllowed) return;
+    
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      setLoading(true);
+      try {
+        const bstr = evt.target.result;
+        const wb = xlsx.read(bstr, { type: 'binary' });
+        const dataJson = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+        if (dataJson.length === 0) throw new Error('File rỗng hoặc không đúng định dạng');
+        
+        const tableName = activeTab === 'address' ? 'ConfigAddress' : 'ConfigCustGroup';
+        const formattedData = dataJson.map(row => {
+          if (activeTab === 'address') {
+            return {
+              address_short: cleanValue(row.address_short || row['Address_Short'] || row['address short'] || ''),
+              code_phuong: cleanValue(row.code_phuong || row['Code_Phuong'] || row['mã phường'] || ''),
+              code_city: cleanValue(row.code_city || row['Code_City'] || row['mã tỉnh'] || ''),
+              code_region: cleanValue(row.code_region || row['Code_Region'] || row['mã vùng'] || ''),
+              name_city: cleanValue(row.name_city || row['Name_City'] || row['tên tỉnh'] || '')
+            };
+          } else {
+            return {
+              group_name: cleanValue(row.group_name || row['Group_Name'] || row['tên nhóm'] || ''),
+              group_code: cleanValue(row.group_code || row['Group_Code'] || row['mã nhóm'] || ''),
+              chanel_code: cleanValue(row.chanel_code || row['Chanel_Code'] || row['mã kênh'] || ''),
+              group_cha: cleanValue(row.group_cha || row['Group_Cha'] || row['nhóm cha'] || ''),
+              limit_code: cleanValue(row.limit_code || row['Limit_Code'] || row['mã giới hạn'] || '')
+            };
+          }
+        });
+
+        const { error } = await supabase.from(tableName).insert(formattedData);
+        if (error) throw error;
+        showStatus('success', `Import thành công ${dataJson.length} bản ghi!`);
+        fetchData();
+      } catch (error) {
+        showStatus('error', 'Lỗi: ' + error.message);
+      } finally {
+        setLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleDelete = async (id) => {
+    if (!isAuthenticated) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    if (!supabase || !window.confirm('Xác nhận xóa bản ghi này?')) return;
+    setLoading(true);
+    try {
+      const tableMap = { address: 'ConfigAddress', custgroup: 'ConfigCustGroup', channel: 'ConfigChannel', model: 'ConfigModel' };
+      const tableName = tableMap[activeTab];
+      const { error } = await supabase.from(tableName).delete().eq('id', id);
+      if (error) throw error;
+      showStatus('success', 'Xóa thành công');
+      fetchData();
+    } catch (error) {
+      showStatus('error', 'Lỗi: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredData = activeTab === 'channel' 
+    ? data.filter(item => 
+        item.chcode?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        item.chname?.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : data;
+
+  const getExcelTemplateInfo = () => {
+    if (activeTab === 'address') return { title: "Template Address", columns: ["Address_Short", "Code_Phuong", "Code_City", "Code_Region", "Name_City"] };
+    if (activeTab === 'custgroup') return { title: "Template CustGroup", columns: ["Group_Name", "Group_Code", "Chanel_Code", "Group_Cha", "Limit_Code"] };
+    return null;
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-2 md:p-3 font-sans text-gray-900 text-[14px]">
-      <div className="max-w-full mx-auto space-y-3">
+    <div className="min-h-screen bg-slate-50 p-1 md:p-2 font-sans text-slate-900 overflow-hidden flex flex-col">
+      <div className="max-w-full mx-auto w-full flex-1 flex flex-col overflow-hidden">
         
-        {/* Header Section - Thu gọn padding */}
-        <div className="bg-white px-4 py-3 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-3">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg text-white shadow-sm">
-              <TableIcon size={24} />
+        {/* Header Section */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-2 gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-sm">
+          <div className="flex items-center gap-2">
+            <div className="bg-indigo-600 p-1.5 rounded text-white">
+               {activeTab === 'address' ? <MapPin size={18} /> : 
+                activeTab === 'custgroup' ? <Users size={18} /> : 
+                activeTab === 'model' ? <Box size={18} /> :
+                <Radio size={18} />}
             </div>
             <div>
-              <h1 className="text-xl font-black text-gray-800 tracking-tight leading-none">Data Configurator</h1>
-              <p className="text-[12px] font-bold text-blue-600 uppercase tracking-wider flex items-center gap-1.5 mt-1">
-                <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
-                {activeTab} • {totalCount.toLocaleString()} items
+              <h1 className="text-sm font-bold text-slate-800 leading-none">Data Configurator</h1>
+              <p className="text-[9px] text-slate-500 uppercase font-bold mt-1 flex items-center gap-1">
+                <TableIcon size={9} /> {activeTab} • <span className="text-indigo-600">{totalCount.toLocaleString()} items</span>
               </p>
             </div>
           </div>
-
-          <div className="flex items-center gap-3 flex-wrap justify-center">
-            <div className="bg-gray-100 p-1 rounded-lg flex gap-0.5">
+          
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="bg-slate-100 p-0.5 rounded flex">
               {['address', 'custgroup', 'channel', 'model'].map(id => (
                 <button 
                   key={id}
                   onClick={() => { setActiveTab(id); setCurrentPage(1); setSearchTerm(''); }}
-                  className={`px-3 py-1.5 text-[13px] font-bold rounded-md transition-all ${activeTab === id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                  className={`px-2 py-1 text-[10px] font-bold rounded transition ${activeTab === id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
-                  {id.toUpperCase()}
+                  {id.charAt(0).toUpperCase() + id.slice(1)}
                 </button>
               ))}
             </div>
-            
-            {isAuthenticated ? (
-              <div className="flex items-center gap-3 border-l pl-3 border-gray-300">
-                <div className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 rounded-md text-[13px] font-bold border border-blue-100">
-                  <UserIcon size={14} /> {loginForm.username || 'itmasterht'}
+
+            <div className="flex items-center gap-1 ml-auto">
+              {/* Auth User Info */}
+              {isAuthenticated && (
+                <div className="flex items-center gap-2 mr-2 pr-2 border-r border-slate-200">
+                  <div className="flex items-center gap-1.5 px-2 py-1 bg-red-200 text-indigo-500 rounded-full text-[10px] font-bold uppercase">
+                    <UserIcon size={12} /> itmasterht
+                  </div>
+                  <button onClick={handleLogout} className="p-1 text-slate-400 hover:text-rose-500 transition" title="Đăng xuất">
+                    <LogOut size={14} />
+                  </button>
                 </div>
-                <button onClick={handleLogout} className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition">
-                  <LogOut size={18} />
-                </button>
-              </div>
-            ) : (
-              <button onClick={() => setIsLoginModalOpen(true)} className="flex items-center gap-2 bg-gray-800 text-white px-4 py-1.5 rounded-lg text-[13px] font-black hover:bg-black transition shadow-sm">
-                <Lock size={14} /> ĐĂNG NHẬP
+              )}
+
+              <button onClick={openActionModal} className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded text-[10px] font-bold transition shadow-sm">
+                <Plus size={14} /> Thêm
               </button>
-            )}
+              
+              {['address', 'custgroup'].includes(activeTab) && (
+                <button onClick={triggerImport} className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded text-[10px] font-bold transition shadow-sm">
+                  <Upload size={14} /> Import
+                  <input type="file" ref={fileInputRef} onChange={handleImportExcel} accept=".xlsx, .xls" className="hidden" />
+                </button>
+              )}
+              
+              <button onClick={() => fetchData()} className="p-1 bg-white border border-slate-200 rounded hover:bg-slate-50 transition text-slate-600">
+                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Search & Action Bar - Thu gọn chiều cao */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-2">
-          <div className="lg:col-span-9 relative group">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-blue-500 transition-colors" size={18} />
+        {/* Search & Pagination Bar */}
+        <div className="flex flex-col md:flex-row gap-2 mb-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
             <input 
               type="text" 
               placeholder={`Tìm kiếm trong ${activeTab}...`}
-              className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-lg text-[14px] focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none shadow-sm transition-all"
+              className="w-full pl-8 pr-4 py-1.5 bg-white border border-slate-200 rounded-lg text-[12px] focus:ring-1 focus:ring-indigo-500 outline-none shadow-sm"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); if (activeTab !== 'channel') setCurrentPage(1); }}
             />
           </div>
-          
-          <div className="lg:col-span-3 flex gap-2">
-            <button 
-              onClick={() => isAuthenticated ? setIsModalOpen(true) : setIsLoginModalOpen(true)}
-              className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-[14px] font-bold transition shadow-sm active:scale-95"
-            >
-              <Plus size={18} /> THÊM
-            </button>
-            <button onClick={() => fetchData()} className="p-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition text-gray-600 shadow-sm">
-              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-            </button>
-          </div>
+
+          {activeTab !== 'channel' && totalPages > 1 && (
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 p-1 rounded-lg shadow-sm">
+              <div className="flex items-center bg-slate-50 border border-slate-200 rounded overflow-hidden">
+                <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage === 1 || loading} className="p-1.5 hover:bg-white text-slate-600 disabled:opacity-30 border-r border-slate-200"><ChevronLeft size={14} /></button>
+                <div className="flex items-center px-2 gap-1.5">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Trang</span>
+                  <input type="text" value={pageInputValue} onChange={(e) => setPageInputValue(e.target.value)} onKeyDown={handlePageInputSubmit} className="w-8 h-5 text-center text-[11px] font-bold text-indigo-600 bg-white border border-slate-200 rounded focus:ring-1 focus:ring-indigo-500 outline-none" />
+                  <span className="text-[10px] font-bold text-slate-400">/ {totalPages}</span>
+                </div>
+                <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled={currentPage === totalPages || loading} className="p-1.5 hover:bg-white text-slate-600 disabled:opacity-30 border-l border-slate-200"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Status Message */}
-        {status.message && (
-          <div className={`p-3 rounded-lg flex items-center gap-3 text-[13px] font-bold border animate-in slide-in-from-top-2 ${status.type === 'success' ? 'bg-green-50 text-green-700 border-green-100' : 'bg-red-50 text-red-700 border-red-100'}`}>
-            {status.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-            {status.message}
+        {/* Template Info Area */}
+        {getExcelTemplateInfo() && (
+          <div className="mb-2 bg-white border-l-2 border-emerald-500 p-1.5 rounded-r shadow-sm flex items-center gap-2">
+            <FileSpreadsheet size={12} className="text-emerald-600" />
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight mr-2">{getExcelTemplateInfo().title}:</span>
+            <div className="flex flex-wrap gap-1 items-center">
+              {getExcelTemplateInfo().columns.map((col, idx) => (
+                <span key={col} className="text-[9px] font-mono font-bold text-slate-500 bg-slate-50 px-1 border border-slate-200 rounded">{idx + 1}.{col}</span>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Data Table - Tối ưu padding dòng để hiển thị nhiều dòng hơn */}
-        <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="overflow-x-auto max-h-[calc(100vh-220px)] overflow-y-auto">
-            <table className="w-full text-left border-collapse min-w-[800px]">
+        {status.message && (
+          <div className={`mb-2 p-1.5 rounded flex items-center gap-2 text-[11px] border shadow-sm ${status.type === 'success' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-rose-50 text-rose-700 border-rose-100'}`}>
+            {status.type === 'success' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+            <span className="font-bold">{status.message}</span>
+          </div>
+        )}
+
+        {/* Data Table Area */}
+        <div className="bg-white border border-slate-200 rounded-lg shadow-sm flex-1 flex flex-col overflow-hidden min-h-0">
+          <div className="overflow-auto flex-1 scrollbar-thin scrollbar-thumb-slate-200">
+            <table className="w-full text-left border-collapse min-w-[900px] table-fixed">
               <thead className="sticky top-0 z-10">
-                <tr className="bg-gray-100 border-b border-gray-200">
-                  <th className="px-3 py-2 text-[12px] font-black text-gray-500 uppercase tracking-tighter w-12 text-center">#</th>
-                  {activeTab === 'address' && (
-                    <>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase">Địa chỉ rút gọn</th>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase w-32 text-center">Mã Phường</th>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase w-40 text-center">Tỉnh/Thành</th>
-                    </>
-                  )}
-                  {activeTab === 'custgroup' && (
-                    <>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase">Tên Nhóm</th>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase">Mã Nhóm</th>
-                      <th className="px-3 py-2 text-[12px] font-black text-gray-600 uppercase">Kênh</th>
-                    </>
-                  )}
-                  <th className="px-3 py-2 text-[12px] font-black text-gray-500 uppercase w-24 text-center">ID</th>
-                  <th className="px-1 py-2 w-12"></th>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase tracking-wider w-10 text-center">#</th>
+                  {activeTab === 'address' && (<><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-1/4">Address Short</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-28">Phường</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-20">City Code</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-20">Region</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">City Name</th></>)}
+                  {activeTab === 'custgroup' && (<><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-1/4">Group Name</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Group Code</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Channel</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Parent</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-24">Limit</th></>)}
+                  {activeTab === 'channel' && (<><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Mã Kênh</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase">Tên Kênh</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Ngày tạo</th></>)}
+                  {activeTab === 'model' && (<><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase">Model Name</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Model Code</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Channel</th><th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-32">Ngày tạo</th></>)}
+                  <th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-16 text-center">ID</th>
+                  <th className="px-3 py-1.5 font-bold text-slate-500 text-[9px] uppercase w-10 text-center"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-slate-100">
                 {loading ? (
-                  <tr>
-                    <td colSpan="10" className="py-20 text-center">
-                      <div className="flex flex-col items-center gap-2">
-                        <RefreshCw className="animate-spin text-blue-600" size={32} />
-                        <span className="text-[14px] font-bold text-gray-400">Đang tải...</span>
-                      </div>
-                    </td>
-                  </tr>
-                ) : data.length === 0 ? (
-                  <tr>
-                    <td colSpan="10" className="py-20 text-center text-gray-400 text-[14px] italic">Không tìm thấy bản ghi nào</td>
-                  </tr>
+                  <tr><td colSpan="10" className="p-8 text-center text-slate-400 italic text-[11px]"><RefreshCw className="animate-spin inline-block mb-1 text-indigo-500" size={20} /><p>Đang tải dữ liệu...</p></td></tr>
+                ) : filteredData.length === 0 ? (
+                  <tr><td colSpan="10" className="p-8 text-center text-slate-400 italic text-[11px]">Không tìm thấy dữ liệu.</td></tr>
                 ) : (
-                  data.map((item, idx) => (
-                    <tr key={item.id} className="hover:bg-blue-50/40 transition-colors group">
-                      <td className="px-3 py-1.5 text-center text-gray-400 font-mono text-[13px]">
-                        {idx + 1 + (currentPage - 1) * itemsPerPage}
-                      </td>
-                      {activeTab === 'address' && (
-                        <>
-                          <td className="px-3 py-1.5 text-[14px] font-bold text-gray-800">{item.address_short}</td>
-                          <td className="px-3 py-1.5 text-center font-mono text-gray-500 text-[13px] bg-gray-50/30">{item.code_phuong}</td>
-                          <td className="px-3 py-1.5 text-center">
-                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[12px] font-bold border border-blue-100">
-                              {item.name_city}
-                            </span>
-                          </td>
-                        </>
-                      )}
-                      {activeTab === 'custgroup' && (
-                        <>
-                          <td className="px-3 py-1.5 text-[14px] font-bold text-gray-800">{item.group_name}</td>
-                          <td className="px-3 py-1.5 font-mono text-gray-600 text-[13px]">{item.group_code}</td>
-                          <td className="px-3 py-1.5 text-[13px] font-bold text-blue-600">{item.chanel_code}</td>
-                        </>
-                      )}
-                      <td className="px-3 py-1.5 text-center text-gray-300 font-mono text-[12px]">#{item.id}</td>
-                      <td className="px-1 py-1.5 text-center">
-                        <button className="p-1 text-gray-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100">
-                          <Trash2 size={16} />
-                        </button>
+                  filteredData.map((item, index) => (
+                    <tr key={item.id} className="hover:bg-slate-50/80 transition-colors group">
+                      <td className="px-3 py-1 text-center text-slate-400 font-mono text-[10px]">{(activeTab === 'channel' ? index + 1 : ((currentPage - 1) * itemsPerPage) + index + 1)}</td>
+                      {activeTab === 'address' && (<><td className="px-3 py-1 font-bold text-slate-800 text-[11px] truncate">{item.address_short}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px] truncate italic">{item.code_phuong}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px]">{item.code_city}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px]">{item.code_region}</td><td className="px-3 py-1"><span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100">{item.name_city}</span></td></>)}
+                      {activeTab === 'custgroup' && (<><td className="px-3 py-1 font-bold text-slate-800 text-[11px] truncate">{item.group_name}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px]">{item.group_code}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px]">{item.chanel_code}</td><td className="px-3 py-1 text-slate-500 font-medium text-[10px] truncate">{item.group_cha}</td><td className="px-3 py-1"><span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded text-[9px] font-bold border border-amber-100">{item.limit_code}</span></td></>)}
+                      {activeTab === 'channel' && (<><td className="px-3 py-1 text-slate-600 font-mono font-bold text-[10px]">{item.chcode}</td><td className="px-3 py-1 font-bold text-slate-800 text-[11px]">{item.chname}</td><td className="px-3 py-1 text-slate-400 text-[10px]">{item.created_at ? new Date(item.created_at).toLocaleDateString('vi-VN') : '-'}</td></>)}
+                      {activeTab === 'model' && (<><td className="px-3 py-1 font-bold text-slate-800 text-[11px]">{item.mdname}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px]">{item.mdcode}</td><td className="px-3 py-1 text-slate-600 font-mono text-[10px] italic">{item.chanel_code}</td><td className="px-3 py-1 text-slate-400 text-[10px]">{item.created_at ? new Date(item.created_at).toLocaleDateString('vi-VN') : '-'}</td></>)}
+                      <td className="px-3 py-1 text-slate-300 text-[9px] font-mono text-center">#{item.id}</td>
+                      <td className="px-3 py-1 text-center">
+                        <button onClick={() => handleDelete(item.id)} className="p-1 text-slate-300 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Trash2 size={12} /></button>
                       </td>
                     </tr>
                   ))
@@ -320,96 +517,123 @@ const App = () => {
               </tbody>
             </table>
           </div>
-
-          {/* Pagination - Nhỏ gọn */}
-          <div className="bg-gray-50 p-3 border-t border-gray-200 flex flex-col md:flex-row justify-between items-center gap-3">
-            <div className="text-[13px] font-bold text-gray-400">
-              {data.length} / {totalCount.toLocaleString()} ITEMS
-            </div>
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="p-1.5 bg-white border border-gray-300 rounded hover:border-blue-500 disabled:opacity-20 transition-all"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              
-              <div className="flex items-center gap-2 bg-white px-3 py-1 border border-gray-300 rounded shadow-inner">
-                <input 
-                  type="text" 
-                  value={pageInputValue} 
-                  onChange={e => setPageInputValue(e.target.value)}
-                  className="w-8 text-center text-[14px] font-black text-blue-600 outline-none"
-                />
-                <span className="text-[12px] font-black text-gray-400">/ {Math.ceil(totalCount / itemsPerPage)}</span>
-              </div>
-
-              <button 
-                onClick={() => setCurrentPage(p => Math.min(Math.ceil(totalCount / itemsPerPage), p + 1))}
-                disabled={currentPage >= Math.ceil(totalCount / itemsPerPage)}
-                className="p-1.5 bg-white border border-gray-300 rounded hover:border-blue-500 disabled:opacity-20 transition-all"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
-          </div>
         </div>
-      </div>
 
-      {/* Login Modal */}
-      {isLoginModalOpen && (
-        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-            <div className="bg-blue-600 p-6 text-white text-center">
-              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3 border-4 border-white/10 shadow-lg">
-                <Lock size={32} />
-              </div>
-              <h2 className="text-2xl font-black tracking-tight">XÁC THỰC</h2>
-              <p className="text-blue-100 text-[13px] opacity-80">Quản trị hệ thống nội bộ</p>
-            </div>
-            
-            <form onSubmit={handleLogin} className="p-6 space-y-4">
-              {loginError && (
-                <div className="p-2.5 bg-red-50 text-red-600 text-[12px] font-bold rounded-lg flex items-center gap-2 border border-red-100">
-                  <AlertCircle size={16} /> {loginError}
+        {/* Modal Login */}
+        {isLoginModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+              <div className="bg-indigo-600 p-6 text-white text-center relative">
+                <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-4 backdrop-blur-md">
+                  <Lock size={32} />
                 </div>
-              )}
+                <h2 className="text-xl font-bold">Yêu cầu đăng nhập</h2>
+                <p className="text-indigo-100 text-[12px] mt-1">Vui lòng đăng nhập để thực hiện tác vụ này</p>
+                <button onClick={() => setIsLoginModalOpen(false)} className="absolute top-4 right-4 text-white/60 hover:text-white transition">✕</button>
+              </div>
               
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-black text-gray-400 uppercase ml-1">Tài khoản</label>
-                <input 
-                  required 
-                  type="text" 
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-[14px] font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" 
-                  value={loginForm.username}
-                  onChange={e => setLoginForm({...loginForm, username: e.target.value})}
-                />
-              </div>
+              <form onSubmit={handleLogin} className="p-6 space-y-4">
+                {loginError && (
+                  <div className="p-3 bg-rose-50 border border-rose-100 text-rose-600 text-[11px] rounded-lg font-bold flex gap-2 items-center">
+                    <AlertCircle size={14} /> {loginError}
+                  </div>
+                )}
+                
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Tài khoản</label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+                    <input 
+                      autoFocus
+                      required 
+                      type="text"
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
+                      placeholder="Username"
+                      value={loginForm.username}
+                      onChange={e => setLoginForm({...loginForm, username: e.target.value})}
+                    />
+                  </div>
+                </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-black text-gray-400 uppercase ml-1">Mật khẩu</label>
-                <input 
-                  required 
-                  type="password" 
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-[14px] font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" 
-                  value={loginForm.password}
-                  onChange={e => setLoginForm({...loginForm, password: e.target.value})}
-                />
-              </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Mật khẩu</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+                    <input 
+                      required 
+                      type="password"
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
+                      placeholder="Password"
+                      value={loginForm.password}
+                      onChange={e => setLoginForm({...loginForm, password: e.target.value})}
+                    />
+                  </div>
+                </div>
 
-              <div className="pt-2 flex flex-col gap-2">
-                <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[15px] font-black shadow-md transition-all">
-                  ĐĂNG NHẬP
+                <button type="submit" className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[13px] font-bold transition-all shadow-lg shadow-indigo-200 flex items-center justify-center gap-2">
+                  <LogIn size={16} /> Đăng nhập ứng dụng
                 </button>
-                <button type="button" onClick={() => setIsLoginModalOpen(false)} className="text-gray-400 text-[13px] font-bold hover:text-gray-600 py-1">
-                  Đóng
-                </button>
-              </div>
-            </form>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Modal Insert Data */}
+        {isModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center z-50 p-2">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
+              <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <h2 className="text-[13px] font-bold text-slate-800 uppercase flex items-center gap-2">
+                  <Plus size={16} className="text-indigo-600" /> Thêm mới {activeTab}
+                </h2>
+                <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+              </div>
+              <form onSubmit={handleInsert} className="p-4 space-y-3">
+                {activeTab === 'address' && (
+                  <>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Address Short</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] outline-none" value={addressForm.address_short} onChange={e => setAddressForm({...addressForm, address_short: e.target.value})} /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Mã Phường</label><input className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={addressForm.code_phuong} onChange={e => setAddressForm({...addressForm, code_phuong: e.target.value})} /></div>
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Mã City</label><input className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={addressForm.code_city} onChange={e => setAddressForm({...addressForm, code_city: e.target.value})} /></div>
+                    </div>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Tên Tỉnh/Thành phố</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px]" value={addressForm.name_city} onChange={e => setAddressForm({...addressForm, name_city: e.target.value})} /></div>
+                  </>
+                )}
+                {activeTab === 'custgroup' && (
+                  <>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Group Name</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px]" value={custGroupForm.group_name} onChange={e => setCustGroupForm({...custGroupForm, group_name: e.target.value})} /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Code</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={custGroupForm.group_code} onChange={e => setCustGroupForm({...custGroupForm, group_code: e.target.value})} /></div>
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Channel</label><input className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={custGroupForm.chanel_code} onChange={e => setCustGroupForm({...custGroupForm, chanel_code: e.target.value})} /></div>
+                    </div>
+                  </>
+                )}
+                {activeTab === 'channel' && (
+                  <>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Mã Kênh</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={channelForm.chcode} onChange={e => setChannelForm({...channelForm, chcode: e.target.value})} /></div>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Tên Kênh</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px]" value={channelForm.chname} onChange={e => setChannelForm({...channelForm, chname: e.target.value})} /></div>
+                  </>
+                )}
+                {activeTab === 'model' && (
+                  <>
+                    <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Model Name</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px]" value={modelForm.mdname} onChange={e => setModelForm({...modelForm, mdname: e.target.value})} /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Code</label><input required className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={modelForm.mdcode} onChange={e => setModelForm({...modelForm, mdcode: e.target.value})} /></div>
+                      <div><label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Channel</label><input className="w-full px-3 py-1.5 border border-slate-200 rounded text-[12px] font-mono" value={modelForm.chanel_code} onChange={e => setModelForm({...modelForm, chanel_code: e.target.value})} /></div>
+                    </div>
+                  </>
+                )}
+
+                <div className="pt-2 flex gap-2">
+                  <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-2 border border-slate-200 text-slate-600 rounded text-[11px] font-bold hover:bg-slate-50 transition-all">Hủy</button>
+                  <button type="submit" disabled={loading} className="flex-1 py-2 bg-indigo-600 text-white rounded text-[11px] font-bold hover:bg-indigo-700 transition-all disabled:opacity-50">Lưu dữ liệu</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 };
