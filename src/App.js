@@ -156,12 +156,15 @@ const App = () => {
         let query = supabase.from(tableName).select('*', { count: 'exact' });
 
         if (searchTerm) {
+          // FIX: Escape dấu phẩy bằng cách bọc chuỗi tìm kiếm trong dấu ngoặc kép để tránh lỗi logic tree
+          const escapedSearch = `"%${searchTerm}%"`;
+          
           if (activeTab === 'address') {
-            query = query.or(`address_short.ilike.%${searchTerm}%,name_city.ilike.%${searchTerm}%,code_phuong.ilike.%${searchTerm}%`);
+            query = query.or(`address_short.ilike.${escapedSearch},name_city.ilike.${escapedSearch},code_phuong.ilike.${escapedSearch}`);
           } else if (activeTab === 'custgroup') {
-            query = query.or(`group_name.ilike.%${searchTerm}%,group_code.ilike.%${searchTerm}%,chanel_code.ilike.%${searchTerm}%`);
+            query = query.or(`group_name.ilike.${escapedSearch},group_code.ilike.${escapedSearch},chanel_code.ilike.${escapedSearch}`);
           } else if (activeTab === 'model') {
-            query = query.or(`mdcode.ilike.%${searchTerm}%,mdname.ilike.%${searchTerm}%,chanel_code.ilike.%${searchTerm}%`);
+            query = query.or(`mdcode.ilike.${escapedSearch},mdname.ilike.${escapedSearch},chanel_code.ilike.${escapedSearch}`);
           }
         }
 
@@ -366,7 +369,7 @@ const App = () => {
     <div className="min-h-screen bg-slate-50 p-1 font-sans text-slate-900 text-[14px] flex flex-col overflow-hidden">
       <div className="max-w-full mx-auto w-full flex-1 flex flex-col overflow-hidden">
         
-        {/* Header Section - Giảm padding */}
+        {/* Header Section */}
         <div className="flex flex-col md:flex-row md:items-center justify-between mb-1 gap-2 bg-white p-1.5 rounded-lg border border-slate-200 shadow-sm">
           <div className="flex items-center gap-2">
             <div className="bg-indigo-600 p-1 rounded text-white">
@@ -426,13 +429,13 @@ const App = () => {
           </div>
         </div>
 
-        {/* Search & Pagination Bar - Giảm margin mb-2 thành mb-1 */}
+        {/* Search & Pagination Bar */}
         <div className="flex flex-col md:flex-row gap-2 mb-1">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
             <input 
               type="text" 
-              placeholder={`Tìm kiếm trong ${activeTab}...`}
+              placeholder={`Tìm kiếm cụm từ (có dấu phẩy)...`}
               className="w-full pl-8 pr-4 py-1.5 bg-white border border-slate-200 rounded-lg text-[14px] focus:ring-1 focus:ring-indigo-500 outline-none shadow-sm"
               value={searchTerm}
               onChange={(e) => { setSearchTerm(e.target.value); if (activeTab !== 'channel') setCurrentPage(1); }}
@@ -454,7 +457,7 @@ const App = () => {
           )}
         </div>
 
-        {/* Template Info Area - Giảm padding py-1 */}
+        {/* Template Info Area */}
         {getExcelTemplateInfo() && (
           <div className="mb-1 bg-white border-l-2 border-emerald-500 px-1.5 py-1 rounded-r shadow-sm flex items-center gap-2">
             <FileSpreadsheet size={12} className="text-emerald-600" />
@@ -474,7 +477,7 @@ const App = () => {
           </div>
         )}
 
-        {/* Data Table Area - Giảm py-1 cho Header và Body rows */}
+        {/* Data Table Area */}
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm flex-1 flex flex-col overflow-hidden min-h-0">
           <div className="overflow-auto flex-1 scrollbar-thin scrollbar-thumb-slate-200">
             <table className="w-full text-left border-collapse min-w-[900px] table-fixed">
